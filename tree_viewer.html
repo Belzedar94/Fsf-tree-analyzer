@@ -1,0 +1,894 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>📚 Atomic Chess Opening Book Viewer</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        /* Main Container */
+        .main-container {
+            display: grid;
+            grid-template-columns: auto 1fr;
+            gap: 15px;
+            padding: 15px 15px 15px 15px;
+            height: 100vh;
+        }
+
+        /* Left Panel - Chess Board */
+        .left-panel {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: flex-start;
+        }
+
+        .chess-board {
+            display: grid;
+            grid-template-columns: repeat(8, 70px);
+            grid-template-rows: repeat(8, 70px);
+            border: 3px solid #fff;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        .square {
+            width: 70px;
+            height: 70px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 72px;
+            position: relative;
+            cursor: pointer;
+        }
+
+        .square.light {
+            background: #f0d9b5;
+        }
+
+        .square.dark {
+            background: #b58863;
+        }
+
+        .square.highlight {
+            background: rgba(255, 255, 0, 0.5);
+        }
+
+        .square.last-move {
+            background: rgba(155, 199, 0, 0.5);
+        }
+
+        /* Navigation Buttons */
+        .navigation {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        .nav-btn {
+            width: 130px;
+            height: 60px;
+            padding: 20px;
+            background: rgba(102, 126, 234, 0.9);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-size: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 5px;
+            backdrop-filter: blur(10px);
+        }
+
+        .nav-btn:hover {
+            background: rgba(118, 75, 162, 0.9);
+        }
+
+        .nav-btn:disabled {
+            background: rgba(100, 100, 100, 0.5);
+            cursor: not-allowed;
+        }
+
+        .nav-btn .icon {
+            font-size: 32px;
+        }
+
+        /* Right Panel Container */
+        .right-panel {
+            display: grid;
+            grid-template-rows: 250px 110px;
+            gap: 10px;
+            min-width: 0;
+            height: calc(100vh - 23px);
+        }
+
+        /* Moves Panel */
+        .moves-panel {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 10px;
+            padding: 10px;
+            display: flex;
+            flex-direction: column;
+            height: 250px;
+            overflow: hidden;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        /* Info Panel */
+        .info-panel {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 10px;
+            padding: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: white;
+        }
+
+        .info-row {
+            display: flex;
+            align-items: center;
+            margin: 10px 0;
+            font-size: 14px;
+        }
+
+        .info-label {
+            font-weight: 600;
+            color: rgba(255, 255, 255, 0.7);
+            margin-right: 10px;
+            min-width: 45px;
+        }
+
+        .info-value {
+            color: white;
+            font-family: monospace;
+            font-size: 16px;
+            font-weight: 500;
+        }
+
+        /* Graph Panel */
+        .graph-panel {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 10px;
+            padding: 10px;
+            height: 280px;
+            display: flex;
+            flex-direction: column;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .panel-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .panel-title {
+            color: white;
+            font-weight: bold;
+            font-size: 1.1em;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .load-button {
+            background: rgba(102, 126, 234, 0.9);
+            color: white;
+            border: none;
+            padding: 8px 15px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.3s;
+            font-size: 0.9em;
+        }
+
+        .load-button:hover {
+            background: rgba(118, 75, 162, 0.9);
+        }
+
+        .file-input {
+            display: none;
+        }
+
+        /* Moves List */
+        .moves-list {
+            flex: 1;
+            overflow-y: auto;
+            min-height: 0;
+            padding-top: 5px;
+        }
+
+        .move-option {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 10px;
+            margin-left: 30px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+            color: white;
+        }
+
+        .move-option:hover {
+            background: rgba(255, 255, 255, 0.15);
+            border-color: rgba(102, 126, 234, 0.5);
+        }
+
+        .move-info {
+            display: flex;
+            align-items: center;
+        }
+
+        .move-name {
+            font-weight: bold;
+            font-size: 16px;
+        }
+
+        .move-eval {
+            font-weight: bold;
+            padding: 3px 8px;
+            border-radius: 5px;
+            font-size: 16px;
+            margin-left: 30px;
+        }
+
+        .eval-positive {
+            background: rgba(76, 175, 80, 0.3);
+            color: #4caf50;
+        }
+
+        .eval-negative {
+            background: rgba(244, 67, 54, 0.3);
+            color: #f44336;
+        }
+
+        .eval-mate {
+            background: rgba(255, 193, 7, 0.3);
+            color: #ffc107;
+        }
+
+        .move-pv {
+            font-size: 16px;
+            color: rgba(255, 255, 255, 0.6);
+            font-family: monospace;
+            margin-left: auto;
+            padding-left: 10px;
+        }
+
+        /* Canvas Container */
+        .canvas-container {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 8px;
+            min-height: 200px;
+        }
+
+        #analysisGraph {
+            width: 100%;
+            height: 100%;
+        }
+
+        /* Scrollbar styling */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: rgba(102, 126, 234, 0.5);
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(102, 126, 234, 0.7);
+        }
+
+        /* Toast notifications */
+        .toast {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 12px 20px;
+            border-radius: 8px;
+            font-size: 0.9em;
+            z-index: 1000;
+            animation: slideIn 0.3s ease;
+            backdrop-filter: blur(10px);
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateX(100%);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+
+        .toast-success {
+            background: rgba(76, 175, 80, 0.9);
+            color: white;
+        }
+
+        .toast-error {
+            background: rgba(244, 67, 54, 0.9);
+            color: white;
+        }
+
+        /* Empty state */
+        .empty-state {
+            text-align: center;
+            color: rgba(255, 255, 255, 0.5);
+            margin-top: 50px;
+        }
+    </style>
+</head>
+<body>
+    <!-- Main Container -->
+    <div class="main-container">
+        <!-- Left Panel - Chess Board -->
+        <div class="left-panel">
+            <div class="chess-board" id="board"></div>
+            
+            <!-- Navigation Buttons -->
+            <div class="navigation">
+                <button class="nav-btn" onclick="goToStart()" title="Go to start">
+                    <span class="icon">⏮️</span> Start
+                </button>
+                <button class="nav-btn" onclick="goBack()" title="Go back one move">
+                    <span class="icon">⬅️</span> Back
+                </button>
+                <button class="nav-btn" onclick="goForward()" title="Play best move">
+                    <span class="icon">➡️</span> Forward
+                </button>
+                <button class="nav-btn" onclick="goToEnd()" title="Go to end of main line">
+                    <span class="icon">⏭️</span> End
+                </button>
+            </div>
+        </div>
+
+        <!-- Right Panel -->
+        <div class="right-panel">
+            <!-- Moves Panel -->
+            <div class="moves-panel">
+                <div class="panel-header">
+                    <h3 class="panel-title">📊 Opening Book</h3>
+                    <button class="load-button" onclick="document.getElementById('jsonInput').click()">
+                        📁 Load JSON
+                    </button>
+                    <input type="file" id="jsonInput" class="file-input" accept=".json" onchange="loadBookFile(event)">
+                </div>
+
+                <!-- Moves List -->
+                <div class="moves-list" id="movesList">
+                    <div class="empty-state">
+                        <p>Load an opening book JSON file to begin</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Info Panel - Position information -->
+            <div class="info-panel">
+                <div class="info-row">
+                    <span class="info-label">Path:</span>
+                    <span class="info-value" id="breadcrumb">Start</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">FEN:</span>
+                    <span class="info-value" id="currentFen">rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -</span>
+                </div>
+            </div>
+
+            <!-- Graph Panel -->
+            <div class="graph-panel">
+                <div class="panel-header">
+                    <h3 class="panel-title">📈 Analysis Progress</h3>
+                    <button class="load-button" onclick="document.getElementById('logInput').click()">
+                        📁 Load LOG
+                    </button>
+                    <input type="file" id="logInput" class="file-input" accept=".log,.txt" onchange="loadLogFile(event)">
+                </div>
+                
+                <div class="canvas-container">
+                    <canvas id="analysisGraph"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Global variables
+        let bookData = null;
+        let currentPosition = null;
+        let moveHistory = [];
+        let currentFEN = '';
+        let logData = [];
+        
+        // Chess piece symbols
+        const pieces = {
+            'K': '♔', 'Q': '♕', 'R': '♖', 'B': '♗', 'N': '♘', 'P': '♙',
+            'k': '♚', 'q': '♛', 'r': '♜', 'b': '♝', 'n': '♞', 'p': '♟'
+        };
+
+        // Initialize empty board
+        function initBoard() {
+            const board = document.getElementById('board');
+            board.innerHTML = '';
+            
+            for (let row = 0; row < 8; row++) {
+                for (let col = 0; col < 8; col++) {
+                    const square = document.createElement('div');
+                    square.className = `square ${(row + col) % 2 === 0 ? 'light' : 'dark'}`;
+                    square.dataset.row = row;
+                    square.dataset.col = col;
+                    board.appendChild(square);
+                }
+            }
+            
+            // Set starting position
+            setPosition('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1');
+        }
+
+        // Load book JSON file
+        async function loadBookFile(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            
+            try {
+                const text = await file.text();
+                const data = JSON.parse(text);
+                
+                bookData = data.positions;
+                currentPosition = data.root_fen;
+                moveHistory = [];
+                
+                const positionCount = Object.keys(bookData).length;
+                showToast(`Book loaded! ${positionCount} positions`, 'success');
+                
+                // Display root position
+                displayPosition(data.root_fen);
+                
+            } catch (error) {
+                showToast('Error loading JSON: ' + error.message, 'error');
+            }
+        }
+
+        // Load log file
+        async function loadLogFile(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            
+            try {
+                const text = await file.text();
+                parseLogFile(text);
+                drawAnalysisGraph();
+                
+                showToast(`Log loaded! ${logData.length} analyses`, 'success');
+                
+            } catch (error) {
+                showToast('Error loading log: ' + error.message, 'error');
+            }
+        }
+
+        // Parse log file
+        function parseLogFile(text) {
+            logData = [];
+            const lines = text.split('\n');
+            let currentAnalysis = null;
+            let analysisCount = 0;
+            
+            for (const line of lines) {
+                const trimmed = line.trim();
+                
+                // Main evaluation line
+                if (trimmed.startsWith('cp ') || trimmed.startsWith('mate ')) {
+                    if (currentAnalysis) {
+                        logData.push(currentAnalysis);
+                    }
+                    
+                    analysisCount++;
+                    currentAnalysis = {
+                        number: analysisCount,
+                        eval: 0,
+                        pv: '',
+                        alternatives: []
+                    };
+                    
+                    if (trimmed.startsWith('cp ')) {
+                        currentAnalysis.eval = parseInt(trimmed.split(' ')[1]) / 100;
+                    } else if (trimmed.startsWith('mate ')) {
+                        const mateIn = parseInt(trimmed.split(' ')[1]);
+                        currentAnalysis.eval = mateIn > 0 ? 100 : -100;
+                    }
+                    
+                    // Extract PV if present
+                    const pvMatch = trimmed.match(/pv\s+(.+)/);
+                    if (pvMatch) {
+                        currentAnalysis.pv = pvMatch[1];
+                    }
+                }
+                
+                // Alternative moves
+                if (trimmed.startsWith('alt')) {
+                    const parts = trimmed.split(' ');
+                    if (parts.length >= 4 && currentAnalysis) {
+                        const altEval = parts[2] === 'cp' ? 
+                            parseInt(parts[3]) / 100 : 
+                            (parts[2] === 'mate' ? (parseInt(parts[3]) > 0 ? 100 : -100) : 0);
+                        
+                        currentAnalysis.alternatives.push({
+                            move: parts[1],
+                            eval: altEval
+                        });
+                    }
+                }
+            }
+            
+            // Add last analysis
+            if (currentAnalysis) {
+                logData.push(currentAnalysis);
+            }
+        }
+
+        // Draw analysis graph
+        function drawAnalysisGraph() {
+            const canvas = document.getElementById('analysisGraph');
+            if (!canvas || logData.length === 0) return;
+            
+            const ctx = canvas.getContext('2d');
+            const rect = canvas.parentElement.getBoundingClientRect();
+            canvas.width = rect.width;
+            canvas.height = rect.height;
+            
+            const width = canvas.width;
+            const height = canvas.height;
+            const padding = 40;
+            
+            // Clear canvas
+            ctx.clearRect(0, 0, width, height);
+            
+            // Fixed scale from -10 to +10
+            const minEval = -10;
+            const maxEval = 10;
+            
+            // Clamp values to range
+            function clampEval(eval) {
+                if (Math.abs(eval) >= 50) {
+                    // Mate scores
+                    return eval > 0 ? 10 : -10;
+                }
+                return Math.max(-10, Math.min(10, eval));
+            }
+            
+            // Process data with clamping
+            const processedData = logData.map(analysis => ({
+                ...analysis,
+                clampedEval: clampEval(analysis.eval),
+                clampedAlts: analysis.alternatives.map(alt => ({
+                    ...alt,
+                    clampedEval: clampEval(alt.eval)
+                }))
+            }));
+            
+            // Draw axes
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(padding, padding);
+            ctx.lineTo(padding, height - padding);
+            ctx.lineTo(width - padding, height - padding);
+            ctx.stroke();
+            
+            // Draw horizontal grid lines and labels
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+            ctx.font = '12px monospace';
+            ctx.textAlign = 'right';
+            
+            for (let val = -10; val <= 10; val += 2) {
+                const y = height - padding - ((val - minEval) / (maxEval - minEval)) * (height - 2 * padding);
+                
+                // Grid line
+                ctx.strokeStyle = val === 0 ? 'rgba(255, 255, 255, 0.6)' : 'rgba(255, 255, 255, 0.2)';
+                ctx.lineWidth = val === 0 ? 2 : 1;
+                if (val === 0) ctx.setLineDash([5, 5]);
+                ctx.beginPath();
+                ctx.moveTo(padding, y);
+                ctx.lineTo(width - padding, y);
+                ctx.stroke();
+                if (val === 0) ctx.setLineDash([]);
+                
+                // Label
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+                const label = val === 10 ? '+10/M' : val === -10 ? '-10/M' : val > 0 ? '+' + val : val.toString();
+                ctx.fillText(label, padding - 5, y + 3);
+            }
+            
+            // Calculate scales
+            const xScale = (width - 2 * padding) / Math.max(processedData.length - 1, 1);
+            const yScale = (height - 2 * padding) / (maxEval - minEval);
+            
+            // Draw alternatives (smaller gray dots)
+            processedData.forEach((analysis, index) => {
+                const x = padding + index * xScale;
+                
+                analysis.clampedAlts.forEach(alt => {
+                    const altY = height - padding - ((alt.clampedEval - minEval) * yScale);
+                    ctx.fillStyle = 'rgba(180, 180, 180, 0.6)';
+                    ctx.beginPath();
+                    ctx.arc(x, altY, 1, 0, Math.PI * 2);
+                    ctx.fill();
+                });
+            });
+            
+            // Draw main evaluation points - ALL SAME SIZE
+            processedData.forEach((analysis, index) => {
+                const x = padding + index * xScale;
+                const mainY = height - padding - ((analysis.clampedEval - minEval) * yScale);
+                
+                // Determine color based on actual eval
+                let fillColor;
+                if (Math.abs(analysis.eval) >= 50) {
+                    // Mate score
+                    fillColor = analysis.eval > 0 ? '#ffeb3b' : '#ff9800';
+                } else if (analysis.eval > 0) {
+                    fillColor = '#4caf50';
+                } else if (analysis.eval < 0) {
+                    fillColor = '#f44336';
+                } else {
+                    fillColor = '#999';
+                }
+                
+                ctx.fillStyle = fillColor;
+                ctx.beginPath();
+                ctx.arc(x, mainY, 1, 0, Math.PI * 2);  // ALL points are 5px radius
+                ctx.fill();
+                
+                // NO EXTRA RINGS FOR MATE SCORES!
+            });
+        }
+
+        // Compare evaluations for sorting
+        function compareEvaluations(evalA, evalB) {
+            let scoreA = parseEvaluation(evalA);
+            let scoreB = parseEvaluation(evalB);
+            return scoreB - scoreA;
+        }
+        
+        // Convert evaluation to numeric score
+        function parseEvaluation(evalData) {
+            if (evalData.mate_in !== null && evalData.mate_in !== undefined) {
+                if (evalData.mate_in === 0) {
+                    return -999999;
+                } else if (evalData.mate_in > 0) {
+                    return 10000 - evalData.mate_in;
+                } else {
+                    return -10000 - evalData.mate_in;
+                }
+            } else if (evalData.eval_cp !== null && evalData.eval_cp !== undefined) {
+                return evalData.eval_cp;
+            }
+            return -999999;
+        }
+
+        // Display position
+        function displayPosition(fen) {
+            if (!bookData || !bookData[fen]) return;
+            
+            currentFEN = fen;
+            currentPosition = fen;
+            const pos = bookData[fen];
+            
+            // Update board
+            setPosition(fen);
+            
+            // Update FEN and breadcrumb
+            document.getElementById('currentFen').textContent = fen.split(' ').slice(0, 4).join(' ');
+            updateBreadcrumb();
+            
+            // Show available moves
+            displayMoves(pos);
+        }
+
+        // Display moves
+        function displayMoves(pos) {
+            const movesList = document.getElementById('movesList');
+            movesList.innerHTML = '';
+            
+            if (!pos.moves_to_children || pos.moves_to_children.length === 0) {
+                movesList.innerHTML = '<div class="empty-state"><p>No more moves available</p></div>';
+                return;
+            }
+            
+            // Create array of moves with evaluations for sorting
+            const movesWithEval = [];
+            pos.moves_to_children.forEach((move, index) => {
+                const childFen = pos.children_fens[index];
+                const childPos = bookData[childFen];
+                
+                if (!childPos) return;
+                
+                movesWithEval.push({
+                    move: move,
+                    childFen: childFen,
+                    childPos: childPos,
+                    sortEval: {
+                        mate_in: childPos.mate_in !== null ? -childPos.mate_in : null,
+                        eval_cp: childPos.eval_cp !== null ? -childPos.eval_cp : null
+                    }
+                });
+            });
+            
+            // Sort moves by evaluation
+            movesWithEval.sort((a, b) => compareEvaluations(a.sortEval, b.sortEval));
+            
+            // Display sorted moves
+            movesWithEval.forEach(({move, childFen, childPos}) => {
+                const moveDiv = document.createElement('div');
+                moveDiv.className = 'move-option';
+                
+                // Format evaluation
+                let evalText = '?';
+                if (childPos.mate_in !== null && childPos.mate_in !== undefined) {
+                    evalText = `M${-childPos.mate_in}`;
+                } else if (childPos.eval_cp !== null && childPos.eval_cp !== undefined) {
+                    const negEval = -childPos.eval_cp;
+                    evalText = (negEval / 100).toFixed(2);
+                    if (negEval > 0) evalText = '+' + evalText;
+                }
+                
+                // Determine eval class
+                let evalClass = '';
+                if (childPos.mate_in !== null) {
+                    evalClass = 'eval-mate';
+                } else if (childPos.eval_cp !== null) {
+                    evalClass = childPos.eval_cp < 0 ? 'eval-positive' : 'eval-negative';
+                }
+                
+                moveDiv.innerHTML = `
+                    <div class="move-info">
+                        <span class="move-name">${move}</span>
+                        <span class="move-eval ${evalClass}">${evalText}</span>
+                        ${childPos.best_move ? `<span class="move-pv">➔ ${childPos.best_move}</span>` : ''}
+                    </div>
+                `;
+                
+                moveDiv.onclick = () => makeMove(move, childFen);
+                movesList.appendChild(moveDiv);
+            });
+        }
+
+        // Make a move
+        function makeMove(move, newFen) {
+            moveHistory.push({
+                move: move,
+                fen: currentFEN
+            });
+            
+            displayPosition(newFen);
+        }
+
+        // Navigation functions
+        function goToStart() {
+            if (!bookData) return;
+            moveHistory = [];
+            const rootFen = Object.keys(bookData).find(fen => {
+                return fen.includes('rnbqkbnr/pppppppp');
+            }) || Object.keys(bookData)[0];
+            displayPosition(rootFen);
+        }
+
+        function goBack() {
+            if (moveHistory.length > 0) {
+                const lastMove = moveHistory.pop();
+                displayPosition(lastMove.fen);
+            }
+        }
+
+        function goForward() {
+            if (!bookData || !currentPosition) return;
+            const pos = bookData[currentPosition];
+            if (pos && pos.best_child_fen) {
+                makeMove(pos.best_move, pos.best_child_fen);
+            }
+        }
+
+        function goToEnd() {
+            if (!bookData || !currentPosition) return;
+            let pos = bookData[currentPosition];
+            while (pos && pos.best_child_fen) {
+                moveHistory.push({
+                    move: pos.best_move,
+                    fen: currentPosition
+                });
+                currentPosition = pos.best_child_fen;
+                pos = bookData[currentPosition];
+            }
+            displayPosition(currentPosition);
+        }
+
+        // Set position on board from FEN
+        function setPosition(fen) {
+            const parts = fen.split(' ');
+            const position = parts[0];
+            const rows = position.split('/');
+            
+            const squares = document.querySelectorAll('.square');
+            squares.forEach(sq => {
+                sq.innerHTML = '';
+                sq.classList.remove('highlight', 'last-move');
+            });
+            
+            for (let row = 0; row < 8; row++) {
+                let col = 0;
+                for (let char of rows[row]) {
+                    if (char >= '1' && char <= '8') {
+                        col += parseInt(char);
+                    } else {
+                        const square = document.querySelector(
+                            `[data-row="${row}"][data-col="${col}"]`
+                        );
+                        if (square && pieces[char]) {
+                            square.innerHTML = pieces[char];
+                        }
+                        col++;
+                    }
+                }
+            }
+        }
+
+        // Update breadcrumb
+        function updateBreadcrumb() {
+            const breadcrumb = document.getElementById('breadcrumb');
+            const moves = moveHistory.map(m => m.move).join(' ');
+            breadcrumb.textContent = moves || 'Start';
+        }
+
+        // Show toast notification
+        function showToast(message, type) {
+            const existing = document.querySelector('.toast');
+            if (existing) existing.remove();
+            
+            const toast = document.createElement('div');
+            toast.className = `toast toast-${type}`;
+            toast.textContent = message;
+            document.body.appendChild(toast);
+            
+            setTimeout(() => {
+                toast.remove();
+            }, 3000);
+        }
+
+        // Initialize on load
+        initBoard();
+    </script>
+</body>
+</html>
