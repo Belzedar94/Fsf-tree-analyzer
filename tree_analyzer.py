@@ -10,6 +10,7 @@ import json
 import argparse
 import subprocess
 import heapq
+import math
 from itertools import count
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Set, Any
@@ -30,6 +31,19 @@ class Position:
     disproof_number: Optional[int] = 1
     visits: int = 0
 
+
+@dataclass
+class PVLine:
+    move: str
+    eval_cp: Optional[int]
+    mate_in: Optional[int]
+
+@dataclass
+class AnalysisResult:
+    lines: List[PVLine]
+    bestmove: Optional[str]
+    ponder: Optional[str]
+    raw_bestmove: Optional[str] = None
 class FairyStockfishEngine:
     def __init__(self, engine_path: str, variant: str, nnue_path: str,
                  threads: int, hash_size: int, multipv: int, variants_ini: str = None):
@@ -90,12 +104,26 @@ class FairyStockfishEngine:
                 break
         return lines
 
+    def parse_bestmove_line(self, line: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+        if not line.startswith('bestmove'):
+            return None, None, None
+        parts = line.split()
+        best = parts[1] if len(parts) > 1 else None
+        ponder = None
+        if best in {None, '(none)', '0000'}:
+            best = None
+        if 'ponder' in parts:
+            idx = parts.index('ponder')
+            if idx + 1 < len(parts):
+                ponder = parts[idx + 1]
+        return best, ponder, line
+
     def get_fen(self, position_cmd: str = "position startpos") -> str:
         """Get FEN string for current position."""
         self.send(position_cmd)
         self.send("d")
         fen: Optional[str] = None
-        for _ in range(64):
+        for _ in range(128):
             raw = self.process.stdout.readline()
             if not raw:
                 if self.process.poll() is not None:
@@ -110,26 +138,31 @@ class FairyStockfishEngine:
             return fen
         raise RuntimeError(f"Unable to read FEN from engine response for: {position_cmd}")
 
-    def multipv(self, fen: str, depth: int) -> List[Tuple[str, Optional[int], Optional[int]]]:
+    def multipv(self, fen: str, depth: int) -> AnalysisResult:
         """Analyze position with MultiPV."""
         self.send(f"position fen {fen}")
         self.send(f"go depth {depth}")
         pv_data: Dict[int, Tuple[str, Optional[int], Optional[int]]] = {}
 
-        for line in self.receive("bestmove"):
+        lines = self.receive("bestmove")
+        for line in lines:
             if line.startswith("info") and "depth" in line and "multipv" in line:
                 result = self.parse(line)
                 if result:
                     multipv_num, move, eval_cp, mate_in = result
                     pv_data[multipv_num] = (move, eval_cp, mate_in)
 
-        results: List[Tuple[str, Optional[int], Optional[int]]] = []
+        bestmove_line = lines[-1] if lines else ""
+        bestmove, ponder, raw = self.parse_bestmove_line(bestmove_line)
+
+        results: List[PVLine] = []
         for i in range(1, self.multipv_count + 1):
             if i in pv_data:
-                results.append(pv_data[i])
+                move, eval_cp, mate_in = pv_data[i]
+                results.append(PVLine(move=move, eval_cp=eval_cp, mate_in=mate_in))
             else:
                 break
-        return results
+        return AnalysisResult(lines=results, bestmove=bestmove, ponder=ponder, raw_bestmove=raw)
 
     def parse(self, line: str) -> Optional[Tuple[int, str, Optional[int], Optional[int]]]:
         """Parse UCI info line."""
@@ -183,6 +216,9 @@ class BookBuilder:
         self.positions: Dict[str, Position] = {}
         self.analyzed_count = 0
         self.root_fen: Optional[str] = None
+        self.root_player: Optional[str] = None
+        self.proof_threshold = config.get('proof_threshold', 0)
+        self.disproof_threshold = config.get('disproof_threshold', 0)
 
         self.output_dir = Path(config['output_dir'])
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -192,7 +228,7 @@ class BookBuilder:
         self.epd_path = self.output_dir / f"{config['variant']}_book_{config['depth']}.epd"
         self.log = open(self.log_path, 'a')
 
-        self.queue: List[Tuple[int, int, str]] = []
+        self.queue: List[Tuple[float, float, int, str]] = []
         self.in_queue: Set[str] = set()
         self.queue_order = count()
         self.current_fen: Optional[str] = None
@@ -213,6 +249,7 @@ class BookBuilder:
             return
 
         self.root_fen = data.get('root_fen')
+        self.root_player = self._side_to_move(self.root_fen)
         self.analyzed_count = data.get('analyzed_count', 0)
 
         positions_payload = data.get('positions', {})
@@ -261,9 +298,28 @@ class BookBuilder:
                     valid_parents.append(parent_fen)
             pos.parent_fens = valid_parents
 
+    def _side_to_move(self, fen: Optional[str]) -> str:
+        if not fen:
+            return "w"
+        parts = fen.split()
+        if len(parts) > 1:
+            return parts[1]
+        return "w"
+
+    def _is_or_node(self, fen: str) -> bool:
+        if not self.root_player:
+            return True
+        return self._side_to_move(fen) == self.root_player
+
+    def _pn_value(self, value: Optional[int]) -> float:
+        if value is None:
+            return math.inf
+        return float(value)
+
     def initialize_new_book(self):
         """Initialize new book from starting position."""
         self.root_fen = self.engine.get_fen()
+        self.root_player = self._side_to_move(self.root_fen)
         root = Position(fen=self.root_fen)
         self.positions[self.root_fen] = root
         self.enqueue(self.root_fen)
@@ -274,13 +330,14 @@ class BookBuilder:
             return
         if pos.status != "unknown" or pos.children_fens:
             return
-        priority = pos.proof_number if isinstance(pos.proof_number, int) and pos.proof_number is not None else 1
-        heapq.heappush(self.queue, (priority, next(self.queue_order), fen))
+        proof = pos.proof_number if pos.proof_number is not None else math.inf
+        disproof = pos.disproof_number if pos.disproof_number is not None else math.inf
+        heapq.heappush(self.queue, (proof, disproof, next(self.queue_order), fen))
         self.in_queue.add(fen)
 
     def select_next_position(self) -> Optional[str]:
         while self.queue:
-            _, _, fen = heapq.heappop(self.queue)
+            _, _, _, fen = heapq.heappop(self.queue)
             if fen not in self.in_queue:
                 continue
             self.in_queue.remove(fen)
@@ -305,14 +362,26 @@ class BookBuilder:
         analysis = self.engine.multipv(fen, self.config['depth'])
         self._log_analysis(fen, analysis)
 
-        if not analysis:
+        if not analysis.lines and analysis.bestmove is None:
             pos.best_move = None
             pos.best_child_fen = None
-            if pos.mate_in is None:
-                pos.eval_cp = pos.eval_cp or 0
+            pos.children_fens = []
+            pos.moves_to_children = []
+            pos.status = "unknown"
+            if pos.eval_cp is None:
+                pos.eval_cp = 0
+            pos.mate_in = None
             self.update_proof_numbers(fen)
             self.propagate_to_parents(fen)
             return
+
+        if analysis.bestmove is None:
+            self._handle_terminal(fen, pos, analysis)
+            self.update_proof_numbers(fen)
+            self.propagate_to_parents(fen)
+            return
+
+        lines = analysis.lines or ([] if not analysis.bestmove else [PVLine(move=analysis.bestmove, eval_cp=None, mate_in=None)])
 
         old_children = set(pos.children_fens)
         pos.children_fens = []
@@ -320,7 +389,10 @@ class BookBuilder:
         pos.best_child_fen = None
 
         new_children: Set[str] = set()
-        for move, eval_cp, mate_in in analysis:
+        for pv in lines:
+            move = pv.move
+            eval_cp = pv.eval_cp
+            mate_in = pv.mate_in
             child_fen = self.engine.get_fen(f"position fen {fen} moves {move}")
             pos.children_fens.append(child_fen)
             pos.moves_to_children.append(move)
@@ -351,27 +423,55 @@ class BookBuilder:
             if child and fen in child.parent_fens:
                 child.parent_fens = [p for p in child.parent_fens if p != fen]
 
+        if analysis.bestmove:
+            pos.best_move = analysis.bestmove
+        elif pos.moves_to_children:
+            pos.best_move = pos.moves_to_children[0]
+        else:
+            pos.best_move = None
+
         self.minimax(fen)
         self.update_proof_numbers(fen)
         self.propagate_to_parents(fen)
 
-    def _log_analysis(self, fen: str, analysis: List[Tuple[str, Optional[int], Optional[int]]]):
+    def _handle_terminal(self, fen: str, pos: Position, analysis: AnalysisResult):
+        pos.best_move = None
+        pos.best_child_fen = None
+        pos.children_fens = []
+        pos.moves_to_children = []
+        pos.status = "unknown"
+        first = analysis.lines[0] if analysis.lines else None
+        if first:
+            pos.eval_cp = first.eval_cp if first.eval_cp is not None else 0
+            if first.mate_in is None:
+                pos.mate_in = 0
+            else:
+                pos.mate_in = first.mate_in
+        else:
+            if pos.eval_cp is None:
+                pos.eval_cp = 0
+            pos.mate_in = 0
+
+    def _log_analysis(self, fen: str, analysis: AnalysisResult):
         header = [
             "",
             f"Analysis #{self.analyzed_count + 1}",
             f"fen {fen}",
             f"pending {len(self.in_queue)}"
         ]
-        for i, (move, eval_cp, mate_in) in enumerate(analysis, 1):
-            if mate_in is not None:
-                header.append(f"alt{i} {move} mate {mate_in}")
-            elif eval_cp is not None:
-                header.append(f"alt{i} {move} cp {eval_cp}")
+        if analysis.raw_bestmove:
+            header.append(analysis.raw_bestmove)
+        lines = analysis.lines or ([] if not analysis.bestmove else [PVLine(move=analysis.bestmove, eval_cp=None, mate_in=None)])
+        for i, line in enumerate(lines, 1):
+            if line.mate_in is not None:
+                header.append(f"alt{i} {line.move} mate {line.mate_in}")
+            elif line.eval_cp is not None:
+                header.append(f"alt{i} {line.move} cp {line.eval_cp}")
             else:
-                header.append(f"alt{i} {move}")
-        text = '\n'.join(header)
+                header.append(f"alt{i} {line.move}")
+        text = "\n".join(header)
         print(text)
-        self.log.write(text + '\n')
+        self.log.write(text + "\n")
         self.log.flush()
 
     def _child_is_better(self, candidate: Position, current: Position) -> bool:
@@ -433,19 +533,23 @@ class BookBuilder:
 
     def update_proof_numbers(self, fen: str):
         pos = self.positions[fen]
+        is_or = self._is_or_node(fen)
+
         if pos.mate_in is not None:
-            if pos.mate_in < 0:
-                pos.status = "proven_win"
-                pos.proof_number = 0
-                pos.disproof_number = None
-            elif pos.mate_in > 0:
-                pos.status = "proven_loss"
-                pos.proof_number = None
-                pos.disproof_number = 0
-            else:
+            if pos.mate_in == 0:
                 pos.status = "proven_draw"
                 pos.proof_number = None
                 pos.disproof_number = None
+                return
+            root_wins = (pos.mate_in > 0) if is_or else (pos.mate_in < 0)
+            if root_wins:
+                pos.status = "proven_win"
+                pos.proof_number = 0
+                pos.disproof_number = None
+            else:
+                pos.status = "proven_loss"
+                pos.proof_number = None
+                pos.disproof_number = 0
             return
 
         if not pos.children_fens:
@@ -454,30 +558,28 @@ class BookBuilder:
             pos.disproof_number = 1
             return
 
-        child_proofs = []
-        child_disproofs = []
-        infinite_proof = False
-        infinite_disproof = False
-        for child_fen in pos.children_fens:
-            child = self.positions[child_fen]
-            if child.proof_number is None:
-                infinite_proof = True
-            else:
-                child_proofs.append(child.proof_number)
-            if child.disproof_number is None:
-                infinite_disproof = True
-            else:
-                child_disproofs.append(child.disproof_number)
+        proof_values = [self._pn_value(self.positions[child].proof_number) for child in pos.children_fens]
+        disproof_values = [self._pn_value(self.positions[child].disproof_number) for child in pos.children_fens]
 
+        if is_or:
+            proof_metric = min(proof_values) if proof_values else math.inf
+            disproof_metric = sum(disproof_values) if disproof_values else math.inf
+        else:
+            proof_metric = sum(proof_values) if proof_values else math.inf
+            disproof_metric = min(disproof_values) if disproof_values else math.inf
+
+        pos.proof_number = None if math.isinf(proof_metric) else int(proof_metric)
+        pos.disproof_number = None if math.isinf(disproof_metric) else int(disproof_metric)
         pos.status = "unknown"
-        if infinite_proof and not child_proofs:
-            pos.proof_number = None
-        else:
-            pos.proof_number = min(child_proofs) if child_proofs else 1
-        if infinite_disproof and not child_disproofs:
+
+        if self.proof_threshold >= 0 and pos.proof_number is not None and pos.proof_number <= self.proof_threshold:
+            pos.status = "proven_win"
             pos.disproof_number = None
-        else:
-            pos.disproof_number = sum(child_disproofs) if child_disproofs else 1
+            return
+        if self.disproof_threshold >= 0 and pos.disproof_number is not None and pos.disproof_number <= self.disproof_threshold:
+            pos.status = "proven_loss"
+            pos.proof_number = None
+            return
 
     def propagate_to_parents(self, fen: str):
         pos = self.positions[fen]
@@ -495,7 +597,7 @@ class BookBuilder:
             stack.extend(self.positions[parent_fen].parent_fens)
 
     def pending_queue_snapshot(self) -> List[str]:
-        return [fen for _, _, fen in self.queue if fen in self.in_queue]
+        return [fen for _, _, _, fen in self.queue if fen in self.in_queue]
 
     def export(self):
         """Export book to JSON and EPD formats."""
@@ -557,6 +659,8 @@ def main():
     parser.add_argument('--output-dir', default='.', help='Output directory (default: current directory)')
     parser.add_argument('--nnue', dest='nnue_path', help='Path to NNUE file for the variant')
     parser.add_argument('--variants-ini', help='Path to variants.ini configuration file (optional)')
+    parser.add_argument('--proof-threshold', type=int, default=0, help='Auto-mark wins when proof number <= threshold (use -1 to disable)')
+    parser.add_argument('--disproof-threshold', type=int, default=0, help='Auto-mark losses when disproof number <= threshold (use -1 to disable)')
     
     args = parser.parse_args()
     
@@ -594,7 +698,9 @@ def main():
         'hash': args.hash,
         'output_dir': args.output_dir,
         'nnue_path': args.nnue_path,
-        'variants_ini': args.variants_ini
+        'variants_ini': args.variants_ini,
+        'proof_threshold': args.proof_threshold,
+        'disproof_threshold': args.disproof_threshold
     }
     
     # Build book
