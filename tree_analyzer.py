@@ -44,6 +44,8 @@ class AnalysisResult:
     bestmove: Optional[str]
     ponder: Optional[str]
     raw_bestmove: Optional[str] = None
+    legal_moves: Optional[List[str]] = None
+    in_check: Optional[bool] = None
 class FairyStockfishEngine:
     def __init__(self, engine_path: str, variant: str, nnue_path: Optional[str],
                  threads: int, hash_size: int, multipv: Any, variants_ini: str = None):
@@ -143,11 +145,12 @@ class FairyStockfishEngine:
             return fen
         raise RuntimeError(f"Unable to read FEN from engine response for: {position_cmd}")
 
-    def legal_moves(self, fen: str) -> List[str]:
-        """Return all legal moves for a position."""
+    def legal_moves(self, fen: str) -> Tuple[List[str], bool]:
+        """Return all legal moves and whether side to move is in check."""
         self.send(f"position fen {fen}")
         self.send("d")
         moves: List[str] = []
+        in_check = False
         collecting = False
         for _ in range(256):
             raw = self.process.stdout.readline()
@@ -156,6 +159,9 @@ class FairyStockfishEngine:
                     break
                 continue
             line = raw.strip()
+            if line.startswith("Checkers:"):
+                in_check = line.split(":", 1)[1].strip() not in {"-", "", "none"}
+                continue
             if line.startswith("Legal moves:"):
                 collecting = True
                 remainder = line.split("Legal moves:", 1)[1].strip()
@@ -166,8 +172,7 @@ class FairyStockfishEngine:
                 if not line:
                     break
                 moves.extend(line.split())
-        return moves
-
+        return moves, in_check
     def multipv(self, fen: str, depth: int) -> AnalysisResult:
         """Analyze position with MultiPV."""
         self.send(f"position fen {fen}")
@@ -209,7 +214,7 @@ class FairyStockfishEngine:
         return chosen
 
     def analyze_all_moves(self, fen: str, depth: int) -> AnalysisResult:
-        moves = self.legal_moves(fen)
+        moves, in_check = self.legal_moves(fen)
         lines: List[PVLine] = []
         best: Optional[PVLine] = None
         for move in moves:
@@ -218,7 +223,7 @@ class FairyStockfishEngine:
             if best is None or self._line_score(line) > self._line_score(best):
                 best = line
         best_move = best.move if best else (moves[0] if moves else None)
-        return AnalysisResult(lines=lines, bestmove=best_move, ponder=None)
+        return AnalysisResult(lines=lines, bestmove=best_move, ponder=None, legal_moves=moves, in_check=in_check)
 
     def parse(self, line: str) -> Optional[Tuple[int, Optional[str], Optional[int], Optional[int]]]:
         """Parse UCI info line."""
@@ -301,6 +306,7 @@ class BookBuilder:
         self.in_queue: Set[str] = set()
         self.queue_order = count()
         self.current_fen: Optional[str] = None
+        self.stalemate_loss = bool(config.get('stalemate_loss', False))
 
         self.load_existing_data()
 
@@ -450,14 +456,21 @@ class BookBuilder:
         self._log_analysis(fen, depth, analysis)
 
         if not analysis.lines and analysis.bestmove is None:
-            pos.best_move = None
-            pos.best_child_fen = None
-            pos.children_fens = []
-            pos.moves_to_children = []
-            pos.status = "unknown"
-            if pos.eval_cp is None:
-                pos.eval_cp = 0
-            pos.mate_in = None
+            moves = analysis.legal_moves if analysis.legal_moves is not None else None
+            in_check = analysis.in_check if analysis.in_check is not None else False
+            if moves is None:
+                moves, in_check = self.engine.legal_moves(fen)
+            if not moves:
+                self._handle_no_moves_terminal(fen, pos, in_check)
+            else:
+                pos.best_move = None
+                pos.best_child_fen = None
+                pos.children_fens = []
+                pos.moves_to_children = []
+                pos.status = "unknown"
+                if pos.eval_cp is None:
+                    pos.eval_cp = 0
+                pos.mate_in = None
             self.update_proof_numbers(fen)
             self.propagate_to_parents(fen)
             return
@@ -539,6 +552,19 @@ class BookBuilder:
                 pos.eval_cp = 0
             pos.mate_in = 0
 
+    def _handle_no_moves_terminal(self, fen: str, pos: Position, in_check: bool):
+        pos.best_move = None
+        pos.best_child_fen = None
+        pos.children_fens = []
+        pos.moves_to_children = []
+        pos.status = "unknown"
+        if in_check or self.stalemate_loss:
+            pos.mate_in = -1
+            pos.eval_cp = None
+        else:
+            pos.mate_in = 0
+            pos.eval_cp = 0
+
     def _log_analysis(self, fen: str, depth: int, analysis: AnalysisResult):
         header = [
             "",
@@ -568,7 +594,7 @@ class BookBuilder:
         if cm is not None and bm is not None:
             if cm * bm > 0:
                 return cm > bm
-            return cm < 0 <= bm
+            return cm <= 0 and 0 < bm
         if cm is not None and bm is None:
             return cm < 0
         if cm is None and bm is not None:
@@ -743,6 +769,7 @@ def main():
     parser.add_argument('--max-depth', type=int, default=None, help='Maximum depth per node (defaults to --depth)')
     parser.add_argument('--depth-step', type=int, default=0, help='Depth increment after each visit (default: 0)')
     parser.add_argument('--multipv', default='auto', help="Number of best moves to consider (int) or 'auto' for every legal move")
+    parser.add_argument('--stalemate-loss', action='store_true', help='Treat stalemate/no-move positions as a loss for the side to move')
     parser.add_argument('--threads', type=int, default=4, help='Number of threads (default: 4)')
     parser.add_argument('--hash', type=int, default=8192, help='Hash table size in MB (default: 8192)')
     parser.add_argument('--output-dir', default='.', help='Output directory (default: current directory)')
@@ -809,7 +836,8 @@ def main():
         'nnue_path': args.nnue_path,
         'variants_ini': args.variants_ini,
         'proof_threshold': args.proof_threshold,
-        'disproof_threshold': args.disproof_threshold
+        'disproof_threshold': args.disproof_threshold,
+        'stalemate_loss': args.stalemate_loss
     }
     
     # Build book

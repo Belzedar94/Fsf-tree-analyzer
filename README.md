@@ -9,7 +9,7 @@ Early tooling around Fairy-Stockfish aimed at persistent tree analysis for chess
 
 ## Running The Script
 1. Compile Fairy-Stockfish and locate the engine binary plus the relevant NNUE/`variants.ini` files.
-2. Example run: `python tree_analyzer.py <path-to-fairy-stockfish> atomic --output-dir runs/atomic --depth 20 --depth-step 2 --max-depth 80 --multipv auto --threads 8 --hash 8192 --proof-threshold 0 --disproof-threshold 0`.
+2. Example run: `python tree_analyzer.py <path-to-fairy-stockfish> atomic --output-dir runs/atomic --depth 20 --depth-step 2 --max-depth 80 --multipv auto --threads 8 --hash 8192 --proof-threshold 0 --disproof-threshold 0 --stalemate-loss`.
 3. Re-running the same command (with the same `--output-dir`) resumes from the JSON checkpoint that is refreshed every ten analysed nodes and on shutdown.
 
 ## Continuing From A Checkpoint
@@ -21,6 +21,7 @@ Early tooling around Fairy-Stockfish aimed at persistent tree analysis for chess
 - `--depth` is the baseline per-node depth. Use `--depth-step` to climb deeper on subsequent visits (`depth + step * (visits-1)`) and `--max-depth` to cap the escalation.
 - `--multipv auto` (default) enumerates every legal move via repeated `searchmoves`; use a positive integer to cap the frontier when you only want the top-N moves for exploratory passes.
 - For solving tasks such as atomic chess, keep `--multipv auto` so every reply is explored, and raise `--max-depth` while tuning `--depth-step` to defer expensive searches until a node proves stubborn.
+- Use `--stalemate-loss` for variants where the side without moves loses (atomic, antichess, giveaway, etc.).
 
 ## Proof-Number Controls
 - `--proof-threshold` marks a node as a proven win once its proof number falls at, or below, the given value (use `-1` to disable the shortcut).
