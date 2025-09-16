@@ -301,6 +301,7 @@ class BookBuilder:
         self.json_path = self.output_dir / f"{config['variant']}_book_{config['depth']}.json"
         self.epd_path = self.output_dir / f"{config['variant']}_book_{config['depth']}.epd"
         self.log = open(self.log_path, 'a')
+        self.stop_file = self.output_dir / 'STOP'
 
         self.queue: List[Tuple[float, float, int, str]] = []
         self.in_queue: Set[str] = set()
@@ -406,6 +407,17 @@ class BookBuilder:
         return self.engine.multipv(fen, depth)
 
 
+    def _print_progress_start(self, fen: str, depth: int, visits: int):
+        board = fen.split(' ', 1)[0] if ' ' in fen else fen
+        if len(board) > 40:
+            board = board[:40] + '...'
+        message = (f"[{self.analyzed_count + 1}] depth {depth} queue {len(self.in_queue)} "
+                   f"visits {visits} board {board}")
+        print(message, flush=True)
+
+    def _should_stop(self) -> bool:
+        return self.stop_file.exists()
+
     def initialize_new_book(self):
         """Initialize new book from starting position."""
         self.root_fen = self.engine.get_fen()
@@ -450,6 +462,7 @@ class BookBuilder:
         pos.visits += 1
 
         depth = self._depth_for(pos)
+        self._print_progress_start(fen, depth, pos.visits)
         analysis = self._analysis_for(fen, depth)
         if isinstance(self.config.get('multipv'), str) and self.config['multipv'] == 'auto' and not analysis.lines and analysis.bestmove is None:
             analysis = self.engine.multipv(fen, depth)
@@ -741,6 +754,9 @@ class BookBuilder:
         """Build opening book."""
         try:
             while True:
+                if self._should_stop():
+                    print("\nStop file detected. Halting after current export.")
+                    break
                 if not self.analyze():
                     print("\nQueue exhausted. Nothing left to analyze.")
                     break

@@ -16,6 +16,7 @@ Early tooling around Fairy-Stockfish aimed at persistent tree analysis for chess
 - Each run writes `<variant>_book_<depth>.json/.epd` plus a log inside `--output-dir`.
 - To resume after an interruption or on another machine, copy the JSON/EPD/log trio and invoke the script again with identical options (`--variant`, `--output-dir`, proof thresholds, depth scheduling, etc.).
 - The loader rebuilds the game tree, restores the priority queue from the `queue` field, and continues picking unresolved nodes without re-analysing solved branches.
+- Drop a file named `STOP` inside the `--output-dir` to ask the solver to halt after the current batch is exported (delete the file to continue later).
 
 ## Depth & Move Coverage
 - `--depth` is the baseline per-node depth. Use `--depth-step` to climb deeper on subsequent visits (`depth + step * (visits-1)`) and `--max-depth` to cap the escalation.
