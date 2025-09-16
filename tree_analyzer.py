@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Fairy-Stockfish Book Builder - Local Version
-Builds opening books for chess variants using Fairy-Stockfish engine.
+Fairy-Stockfish Tree analyzer - Local Version
+Analyze trees and saves them in opening books for chess variants using Fairy-Stockfish engine.
 """
 
 import os
@@ -433,4 +433,5 @@ def main():
     builder.build()
 
 if __name__ == '__main__':
+
     main()
