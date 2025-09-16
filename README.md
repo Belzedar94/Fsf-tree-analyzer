@@ -9,8 +9,18 @@ Early tooling around Fairy-Stockfish aimed at persistent tree analysis for chess
 
 ## Running The Script
 1. Compile Fairy-Stockfish and locate the engine binary plus the relevant NNUE/`variants.ini` files.
-2. Invoke: `python tree_analyzer.py <path-to-fairy-stockfish> atomic --depth 25 --multipv 3 --threads 4 --proof-threshold 0 --disproof-threshold 0` (adjust depth, multipv, hash, and thresholds for your run).
-3. Outputs land next to the script unless `--output-dir` is provided; JSON captures the pending queue so workers can resume where they left off.
+2. Example run: `python tree_analyzer.py <path-to-fairy-stockfish> atomic --output-dir runs/atomic --depth 20 --depth-step 2 --max-depth 80 --multipv auto --threads 8 --hash 8192 --proof-threshold 0 --disproof-threshold 0`.
+3. Re-running the same command (with the same `--output-dir`) resumes from the JSON checkpoint that is refreshed every ten analysed nodes and on shutdown.
+
+## Continuing From A Checkpoint
+- Each run writes `<variant>_book_<depth>.json/.epd` plus a log inside `--output-dir`.
+- To resume after an interruption or on another machine, copy the JSON/EPD/log trio and invoke the script again with identical options (`--variant`, `--output-dir`, proof thresholds, depth scheduling, etc.).
+- The loader rebuilds the game tree, restores the priority queue from the `queue` field, and continues picking unresolved nodes without re-analysing solved branches.
+
+## Depth & Move Coverage
+- `--depth` is the baseline per-node depth. Use `--depth-step` to climb deeper on subsequent visits (`depth + step * (visits-1)`) and `--max-depth` to cap the escalation.
+- `--multipv auto` (default) enumerates every legal move via repeated `searchmoves`; use a positive integer to cap the frontier when you only want the top-N moves for exploratory passes.
+- For solving tasks such as atomic chess, keep `--multipv auto` so every reply is explored, and raise `--max-depth` while tuning `--depth-step` to defer expensive searches until a node proves stubborn.
 
 ## Proof-Number Controls
 - `--proof-threshold` marks a node as a proven win once its proof number falls at, or below, the given value (use `-1` to disable the shortcut).
@@ -18,7 +28,7 @@ Early tooling around Fairy-Stockfish aimed at persistent tree analysis for chess
 - Combined with the OR/AND propagation, this lets you steer PN/DP search aggressiveness without rebuilding the state file.
 
 ## Status Visualizer
-- `visualize_status.py` summarises a JSON dump (`python visualize_status.py <state.json> --top 5`).
+- `visualize_status.py` summarises a JSON dump (`python visualize_status.py runs/atomic/atomic_book_20.json --top 5`).
 - Add `--dot solver.dot --max-nodes 150` to emit a Graphviz view (nodes are coloured by status, edges labelled with moves); render with `dot -Tpng solver.dot -o solver.png`.
 - The CLI also surfaces the smallest proof/disproof pairs so you can target stubborn subtrees manually.
 

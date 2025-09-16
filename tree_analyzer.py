@@ -45,8 +45,8 @@ class AnalysisResult:
     ponder: Optional[str]
     raw_bestmove: Optional[str] = None
 class FairyStockfishEngine:
-    def __init__(self, engine_path: str, variant: str, nnue_path: str,
-                 threads: int, hash_size: int, multipv: int, variants_ini: str = None):
+    def __init__(self, engine_path: str, variant: str, nnue_path: Optional[str],
+                 threads: int, hash_size: int, multipv: Any, variants_ini: str = None):
         """Initialize Fairy-Stockfish engine with given parameters."""
         self.process = subprocess.Popen(
             [engine_path],
@@ -71,9 +71,14 @@ class FairyStockfishEngine:
             self.send("setoption name Use NNUE value true")
         self.send(f"setoption name Threads value {threads}")
         self.send(f"setoption name Hash value {hash_size}")
-        self.send(f"setoption name MultiPV value {multipv}")
 
-        self.multipv_count = multipv
+        self.multipv_mode = multipv
+        if isinstance(multipv, int) and multipv > 0:
+            self.multipv_count = multipv
+        else:
+            self.multipv_mode = 'auto'
+            self.multipv_count = 1
+        self.send(f"setoption name MultiPV value {self.multipv_count}")
 
     def __enter__(self):
         return self
@@ -138,6 +143,31 @@ class FairyStockfishEngine:
             return fen
         raise RuntimeError(f"Unable to read FEN from engine response for: {position_cmd}")
 
+    def legal_moves(self, fen: str) -> List[str]:
+        """Return all legal moves for a position."""
+        self.send(f"position fen {fen}")
+        self.send("d")
+        moves: List[str] = []
+        collecting = False
+        for _ in range(256):
+            raw = self.process.stdout.readline()
+            if not raw:
+                if self.process.poll() is not None:
+                    break
+                continue
+            line = raw.strip()
+            if line.startswith("Legal moves:"):
+                collecting = True
+                remainder = line.split("Legal moves:", 1)[1].strip()
+                if remainder:
+                    moves.extend(remainder.split())
+                continue
+            if collecting:
+                if not line:
+                    break
+                moves.extend(line.split())
+        return moves
+
     def multipv(self, fen: str, depth: int) -> AnalysisResult:
         """Analyze position with MultiPV."""
         self.send(f"position fen {fen}")
@@ -146,7 +176,7 @@ class FairyStockfishEngine:
 
         lines = self.receive("bestmove")
         for line in lines:
-            if line.startswith("info") and "depth" in line and "multipv" in line:
+            if line.startswith("info") and "depth" in line and "pv" in line:
                 result = self.parse(line)
                 if result:
                     multipv_num, move, eval_cp, mate_in = result
@@ -156,7 +186,8 @@ class FairyStockfishEngine:
         bestmove, ponder, raw = self.parse_bestmove_line(bestmove_line)
 
         results: List[PVLine] = []
-        for i in range(1, self.multipv_count + 1):
+        limit = self.multipv_count if isinstance(self.multipv_count, int) else 1
+        for i in range(1, limit + 1):
             if i in pv_data:
                 move, eval_cp, mate_in = pv_data[i]
                 results.append(PVLine(move=move, eval_cp=eval_cp, mate_in=mate_in))
@@ -164,28 +195,66 @@ class FairyStockfishEngine:
                 break
         return AnalysisResult(lines=results, bestmove=bestmove, ponder=ponder, raw_bestmove=raw)
 
-    def parse(self, line: str) -> Optional[Tuple[int, str, Optional[int], Optional[int]]]:
+    def analyze_move(self, fen: str, move: str, depth: int) -> PVLine:
+        """Analyze a specific move using searchmoves."""
+        self.send(f"position fen {fen}")
+        self.send(f"go depth {depth} searchmoves {move}")
+        chosen = PVLine(move=move, eval_cp=None, mate_in=None)
+        for line in self.receive("bestmove"):
+            if line.startswith("info") and "score" in line:
+                result = self.parse(line)
+                if result:
+                    _, _, eval_cp, mate_in = result
+                    chosen = PVLine(move=move, eval_cp=eval_cp, mate_in=mate_in)
+        return chosen
+
+    def analyze_all_moves(self, fen: str, depth: int) -> AnalysisResult:
+        moves = self.legal_moves(fen)
+        lines: List[PVLine] = []
+        best: Optional[PVLine] = None
+        for move in moves:
+            line = self.analyze_move(fen, move, depth)
+            lines.append(line)
+            if best is None or self._line_score(line) > self._line_score(best):
+                best = line
+        best_move = best.move if best else (moves[0] if moves else None)
+        return AnalysisResult(lines=lines, bestmove=best_move, ponder=None)
+
+    def parse(self, line: str) -> Optional[Tuple[int, Optional[str], Optional[int], Optional[int]]]:
         """Parse UCI info line."""
         parts = line.split()
         try:
             multipv_idx = parts.index("multipv")
             multipv_num = int(parts[multipv_idx + 1])
+        except ValueError:
+            multipv_num = 1
+        try:
             pv_idx = parts.index("pv")
             move = parts[pv_idx + 1]
+        except ValueError:
+            move = None
 
-            eval_cp = None
-            mate_in = None
+        eval_cp = None
+        mate_in = None
 
-            if "score" in parts:
-                score_idx = parts.index("score")
-                if parts[score_idx + 1] == "cp":
-                    eval_cp = int(parts[score_idx + 2])
-                elif parts[score_idx + 1] == "mate":
-                    mate_in = int(parts[score_idx + 2])
+        if "score" in parts:
+            score_idx = parts.index("score")
+            if parts[score_idx + 1] == "cp":
+                eval_cp = int(parts[score_idx + 2])
+            elif parts[score_idx + 1] == "mate":
+                mate_in = int(parts[score_idx + 2])
 
-            return multipv_num, move, eval_cp, mate_in
-        except (ValueError, IndexError):
-            return None
+        return multipv_num, move, eval_cp, mate_in
+
+    @staticmethod
+    def _line_score(line: PVLine) -> Tuple[int, int]:
+        if line.mate_in is not None:
+            if line.mate_in > 0:
+                return (2, -line.mate_in)
+            return (0, line.mate_in)
+        if line.eval_cp is not None:
+            return (1, line.eval_cp)
+        return (-1, -10_000_000)
 
     def quit(self):
         """Quit engine."""
@@ -316,6 +385,21 @@ class BookBuilder:
             return math.inf
         return float(value)
 
+    def _depth_for(self, pos: Position) -> int:
+        base = self.config.get('depth', 1)
+        step = self.config.get('depth_step', 0)
+        max_depth = self.config.get('max_depth', base)
+        visits = max(0, pos.visits - 1)
+        depth = base + step * visits
+        return max(1, min(depth, max_depth))
+
+    def _analysis_for(self, fen: str, depth: int) -> AnalysisResult:
+        multipv = self.config.get('multipv')
+        if isinstance(multipv, str) and multipv == "auto":
+            return self.engine.analyze_all_moves(fen, depth)
+        return self.engine.multipv(fen, depth)
+
+
     def initialize_new_book(self):
         """Initialize new book from starting position."""
         self.root_fen = self.engine.get_fen()
@@ -359,8 +443,11 @@ class BookBuilder:
         pos = self.positions[fen]
         pos.visits += 1
 
-        analysis = self.engine.multipv(fen, self.config['depth'])
-        self._log_analysis(fen, analysis)
+        depth = self._depth_for(pos)
+        analysis = self._analysis_for(fen, depth)
+        if isinstance(self.config.get('multipv'), str) and self.config['multipv'] == 'auto' and not analysis.lines and analysis.bestmove is None:
+            analysis = self.engine.multipv(fen, depth)
+        self._log_analysis(fen, depth, analysis)
 
         if not analysis.lines and analysis.bestmove is None:
             pos.best_move = None
@@ -452,7 +539,7 @@ class BookBuilder:
                 pos.eval_cp = 0
             pos.mate_in = 0
 
-    def _log_analysis(self, fen: str, analysis: AnalysisResult):
+    def _log_analysis(self, fen: str, depth: int, analysis: AnalysisResult):
         header = [
             "",
             f"Analysis #{self.analyzed_count + 1}",
@@ -652,8 +739,10 @@ def main():
     parser.add_argument('variant', help='Chess variant (e.g., atomic, crazyhouse, etc.)')
     
     # Optional arguments
-    parser.add_argument('--depth', type=int, default=25, help='Search depth (default: 25)')
-    parser.add_argument('--multipv', type=int, default=3, help='Number of best moves to consider (default: 3)')
+    parser.add_argument('--depth', type=int, default=25, help='Base search depth (default: 25)')
+    parser.add_argument('--max-depth', type=int, default=None, help='Maximum depth per node (defaults to --depth)')
+    parser.add_argument('--depth-step', type=int, default=0, help='Depth increment after each visit (default: 0)')
+    parser.add_argument('--multipv', default='auto', help="Number of best moves to consider (int) or 'auto' for every legal move")
     parser.add_argument('--threads', type=int, default=4, help='Number of threads (default: 4)')
     parser.add_argument('--hash', type=int, default=8192, help='Hash table size in MB (default: 8192)')
     parser.add_argument('--output-dir', default='.', help='Output directory (default: current directory)')
@@ -688,12 +777,32 @@ def main():
         else:
             args.variants_ini = None
     
+    max_depth = args.max_depth if args.max_depth is not None else args.depth
+    if max_depth < args.depth:
+        max_depth = args.depth
+    multipv_arg = args.multipv
+    if isinstance(multipv_arg, str):
+        try:
+            multipv_value = int(multipv_arg)
+        except ValueError:
+            lower = multipv_arg.lower()
+            if lower in ('auto', 'all'):
+                multipv_value = 'auto'
+            else:
+                print(f"Error: invalid multipv value {multipv_arg}")
+                sys.exit(1)
+    else:
+        multipv_value = multipv_arg
+    if isinstance(multipv_value, int) and multipv_value <= 0:
+        multipv_value = 'auto'
     # Create configuration
     config = {
         'engine_path': str(engine_path),
         'variant': args.variant,
         'depth': args.depth,
-        'multipv': args.multipv,
+        'max_depth': max_depth,
+        'depth_step': args.depth_step,
+        'multipv': multipv_value,
         'threads': args.threads,
         'hash': args.hash,
         'output_dir': args.output_dir,
@@ -709,3 +818,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
